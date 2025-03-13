@@ -86,18 +86,20 @@ var (
 	// The kms key to use for "parent" certificate (intermediate if CA is used, self-signed certificate otherwise)
 	parentKMSKey   = flag.String("parent-kms-resource", "", "Resource path to the asymmetric signing KMS key for the parent certificate, starting with gcpkms://, awskms://, azurekms:// or hashivault://")
 	parentValidity = flag.Int("parent-validity", 20*365, "Days the parent certificate will be valid for. Default 20*365. Value will be truncated by CA if one is used.")
+	parentHash     = flag.String("parent-hash", "SHA256", "Hash function to use with parent key [SHA256, SHA384, SHA512]")
 
 	// leafKMSKey or Tink flags required
 	leafKMSKey     = flag.String("leaf-kms-resource", "", "Resource path to the asymmetric signing KMS key for the leaf, starting with gcpkms://, awskms://, azurekms:// or hashivault://")
+	leafHash       = flag.String("leaf-hash", "SHA256", "Hash function to use with leaf key [SHA256, SHA384, SHA512]")
 	tinkKeysetPath = flag.String("tink-keyset-path", "", "Path to Tink keyset")
 	tinkKmsKey     = flag.String("tink-kms-resource", "", "Resource path to symmetric encryption KMS key to decrypt Tink keyset, starting with gcp-kms:// or aws-kms://")
 
 	outputPath = flag.String("output", "", "Path to write the certificate chain to")
 )
 
-func fetchCertificateChain(ctx context.Context, root, parentKMSKey, leafKMSKey, tinkKeysetPath, tinkKmsKey string,
+func fetchCertificateChain(ctx context.Context, root, parentKMSKey string, parentHashFunc crypto.Hash, leafKMSKey string, leafHashFunc crypto.Hash, tinkKeysetPath, tinkKmsKey string,
 	client *privateca.CertificateAuthorityClient) ([]*x509.Certificate, error) {
-	parentKMSSigner, err := kms.Get(ctx, parentKMSKey, crypto.SHA256)
+	parentKMSSigner, err := kms.Get(ctx, parentKMSKey, parentHashFunc)
 	if err != nil {
 		return nil, err
 	}
@@ -229,7 +231,7 @@ func fetchCertificateChain(ctx context.Context, root, parentKMSKey, leafKMSKey, 
 	// generate leaf certificate
 	var leafKMSSigner crypto.Signer
 	if len(leafKMSKey) > 0 {
-		kmsSigner, err := kms.Get(ctx, leafKMSKey, crypto.SHA256)
+		kmsSigner, err := kms.Get(ctx, leafKMSKey, leafHashFunc)
 		if err != nil {
 			return nil, err
 		}
@@ -303,6 +305,18 @@ func fetchCertificateChain(ctx context.Context, root, parentKMSKey, leafKMSKey, 
 	return certChain, nil
 }
 
+func getHashFunc(name string) (crypto.Hash, error) {
+	switch name {
+	case "SHA256":
+		return crypto.SHA256, nil
+	case "SHA384":
+		return crypto.SHA384, nil
+	case "SHA512":
+		return crypto.SHA512, nil
+	}
+	return crypto.SHA256, fmt.Errorf("Unknown hash %s", name)
+}
+
 func main() {
 	flag.Parse()
 
@@ -319,11 +333,20 @@ func main() {
 		log.Fatal("output must be set")
 	}
 
+	leafHashFunc, err := getHashFunc(*leafHash)
+	if err != nil {
+		log.Fatal(err)
+	}
+	parentHashFunc, err := getHashFunc(*parentHash)
+	if err != nil {
+		log.Fatal(err)
+	}
+
 	client, err := privateca.NewCertificateAuthorityClient(context.Background())
 	if err != nil {
 		log.Fatal(err)
 	}
-	parsedCerts, err := fetchCertificateChain(context.Background(), *gcpCaRoot, *parentKMSKey, *leafKMSKey, *tinkKeysetPath, *tinkKmsKey, client)
+	parsedCerts, err := fetchCertificateChain(context.Background(), *gcpCaRoot, *parentKMSKey, parentHashFunc, *leafKMSKey, leafHashFunc, *tinkKeysetPath, *tinkKmsKey, client)
 	if err != nil {
 		log.Fatal(err)
 	}
